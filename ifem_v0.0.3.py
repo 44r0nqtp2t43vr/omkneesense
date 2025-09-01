@@ -3,7 +3,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 import datetime
-
+# Current Tests
+# 0N = 0.0N
+# 2N = 2.0N
+# 4N = 4.1N
+# 6N = 6.2N
+# 8N = 7.7N
+# 10N = 9.3N
 # --- 1. User Defined Parameters ---
 VIDEO_PATH = 'videos/10N.mp4'  # <<< CHANGE THIS TO YOUR VIDEO FILE
 DISPLAY_SCALE_FACTOR = 0.75
@@ -17,20 +23,25 @@ ROI = (140, 0, 720, 720)  # Example: Crop starting at (140,0) with 720x720 area
 REAL_WORLD_ROI_WIDTH_MM = 20   # mm — physical width of the cropped ROI
 REAL_WORLD_ROI_HEIGHT_MM = 20  # mm — physical height of the cropped ROI
 
+# --- CALIBRATION (Quadratic Model) ---
+# Uses a second-order polynomial to correct for non-linear sensor response.
+# Calibrated Force = A * (raw_force^2) + B * raw_force + C
+# Coefficients are derived from a best-fit curve of the user's experimental data.
+POLY_COEFF_A = 2.83
+POLY_COEFF_B = 6.15
+POLY_COEFF_C = -1.25
+
 # Maximum expected height deformation in millimeters (conceptual, used for scaling)
 max_height = 4  # mm (used to scale simulated pressure)
 
 # Material stiffness (Young's Modulus) — simulated FEM parameter
 YOUNGS_MODULUS = 1e5  # Pa (100 kPa for a soft gel)
 
-# Pressure visualization threshold (optional tuning)
-# threshold = 0.05
-
 # Approximate camera intrinsics (random for now; replace with real values if known)
 FX = np.random.uniform(500, 1000)
 FY = np.random.uniform(500, 1000)
-CX = None 
-CY = None 
+CX = None
+CY = None
 K1, K2, P1, P2 = np.random.uniform(-0.1, 0.1, 4)
 DIST_COEFFS = np.array([K1, K2, P1, P2])
 
@@ -117,12 +128,12 @@ def run_visuotactile_analysis_realtime(video_path, frame_skip, light_vectors, in
     CX = actual_width / 2
     CY = actual_height / 2
     CAMERA_MATRIX = np.array([[FX, 0, CX], [0, FY, CY], [0, 0, 1]])
-    print(f"Camera matrix: \n{CAMERA_MATRIX}")
+
 
     # Compute pixel area in meters² based on real-world ROI size
     roi_width_px = roi[2]
     roi_height_px = roi[3]
-    roi_width_m = REAL_WORLD_ROI_WIDTH_MM / 1000.0  # Convert mm to m
+    roi_width_m = REAL_WORLD_ROI_WIDTH_MM / 1000.0
     roi_height_m = REAL_WORLD_ROI_HEIGHT_MM / 1000.0
     pixel_width_m = roi_width_m / roi_width_px
     pixel_height_m = roi_height_m / roi_height_px
@@ -142,6 +153,9 @@ def run_visuotactile_analysis_realtime(video_path, frame_skip, light_vectors, in
     print("Reference normals estimated.")
 
     frame_count = 0
+    max_raw_force = 0.0
+    max_calibrated_force = 0.0
+
     while True:
         ret, current_frame_original = cap.read()
         if not ret:
@@ -161,8 +175,16 @@ def run_visuotactile_analysis_realtime(video_path, frame_skip, light_vectors, in
         pressure_colored = plt.cm.plasma(norm_pressure(pressure_map))[:, :, :3]
 
         # Compute total normal force in Newtons
-        force_map = pressure_map * 1000 * pixel_area_m2  # Convert kPa → Pa and multiply by area
-        total_force_n = np.sum(force_map)
+        force_map = pressure_map * 1000 * pixel_area_m2
+        raw_total_force_n = np.sum(force_map)
+        calibrated_total_force_n = (POLY_COEFF_A * (raw_total_force_n**2)) + (POLY_COEFF_B * raw_total_force_n) + POLY_COEFF_C
+        calibrated_total_force_n = max(0, calibrated_total_force_n) # Clip at zero to prevent negative force readings
+
+        # Track maximum forces
+        if raw_total_force_n > max_raw_force:
+            max_raw_force = raw_total_force_n
+        if calibrated_total_force_n > max_calibrated_force:
+            max_calibrated_force = calibrated_total_force_n
 
         # Combine views
         vis_image_left = current_frame
@@ -195,7 +217,7 @@ def run_visuotactile_analysis_realtime(video_path, frame_skip, light_vectors, in
 
         # Display max pressure and total contact force
         cv2.putText(display_image,
-                    f"Total Force: {total_force_n:.2f} N",
+                    f"Total Force: {calibrated_total_force_n:.2f} N",
                     (int((vis_image_left.shape[1] + 10) * display_scale_factor), int((combined_vis_image.shape[0] - 40) * display_scale_factor)),
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
 
@@ -214,6 +236,10 @@ def run_visuotactile_analysis_realtime(video_path, frame_skip, light_vectors, in
     print("\nDisclaimer: This script uses simplified approximations for FEM.")
     print("Accurate photometric stereo requires careful setup and assumption validation.")
     print("A real implementation requires precise calibration, advanced computer vision, and dedicated FEM solvers.")
+    print("\n--- Calibration Info ---")
+    print(f"Max Raw Force Detected: {max_raw_force:.4f} N")
+    print(f"Max Calibrated Force: {max_calibrated_force:.4f} N")
+    print("------------------------\n")
 
 # --- Run the analysis ---
 if __name__ == "__main__":
@@ -223,5 +249,5 @@ if __name__ == "__main__":
         normal_light_vectors,
         inverse_light_vectors,
         DISPLAY_SCALE_FACTOR,
-        ROI  # Pass the ROI
+        ROI
     )
